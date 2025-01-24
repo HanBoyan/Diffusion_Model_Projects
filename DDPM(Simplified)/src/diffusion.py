@@ -1,19 +1,19 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from attention import SelfAttention,CrossAttention
+from .attention import SelfAttention,CrossAttention
 
 
 class TimeEmbedding(nn.Module):
     def __init__(self, embed_dim):
         super().__init__()
-        self.linear1 = nn.Linear(embed_dim, 4*embed_dim)
-        self.linear2 = nn.Linear(4*embed_dim, 4*embed_dim)
+        self.linear_1 = nn.Linear(embed_dim, 4*embed_dim)
+        self.linear_2 = nn.Linear(4*embed_dim, 4*embed_dim)
 
     def forward(self, x):
-        x = self.linear1(x)
+        x = self.linear_1(x)
         x = F.silu(x)
-        x = self.linear2(x)
+        x = self.linear_2(x)
 
         #(1,320)->(1,1280)
         return x
@@ -46,12 +46,12 @@ class UpSample(nn.Module):
 class UNet_ResidualBlock(nn.Module):
     def __init__(self, in_channels, out_channels,n_time = 1280):
         super().__init__()
-        self.groupnorm1 = nn.GroupNorm(32,in_channels)
-        self.conv1 = nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1)
+        self.groupnorm_feature = nn.GroupNorm(32,in_channels)
+        self.conv_feature = nn.Conv2d(in_channels,out_channels,kernel_size=3,padding=1)
         self.linear = nn.Linear(n_time,out_channels)
 
-        self.groupnorm2 = nn.GroupNorm(32,out_channels)
-        self.conv2 = nn.Conv2d(out_channels,out_channels,kernel_size=3,padding=1)
+        self.groupnorm_merged = nn.GroupNorm(32,out_channels)
+        self.conv_merged = nn.Conv2d(out_channels,out_channels,kernel_size=3,padding=1)
 
         if in_channels!= out_channels:
             self.residual_layer = nn.Conv2d(in_channels,out_channels,kernel_size=1)
@@ -64,11 +64,11 @@ class UNet_ResidualBlock(nn.Module):
         #time(1,n_time)
 
         residue = x
-        x = self.groupnorm1(x)
+        x = self.groupnorm_feature(x)
         x = F.silu(x)
 
         #(batch_size,out_channels,Height,Width)
-        x = self.conv1(x)
+        x = self.conv_feature(x)
         time = F.silu(time)
 
         #time(1,n_time)->(1,out_channels)
@@ -76,9 +76,9 @@ class UNet_ResidualBlock(nn.Module):
         #(batch_size,out_channels,Height,Width) + (1,out_channels,1,1)
         x = x + time.unsqueeze(-1).unsqueeze(-1)
 
-        x = self.groupnorm2(x)
+        x = self.groupnorm_merged(x)
         x = F.silu(x)
-        x = self.conv2(x)
+        x = self.conv_merged(x)
 
         x = x + self.residual_layer(residue)
 
@@ -92,15 +92,15 @@ class UNet_AttentionBlock(nn.Module):
         self.groupnorm = nn.GroupNorm(32,channels,eps=1e-6)
         self.conv_input = nn.Conv2d(channels,channels,kernel_size=1,padding=0)
 
-        self.layer_norm1 = nn.LayerNorm(channels)
-        self.attention1 = SelfAttention(channels,n_head,channels)
-        self.layer_norm2 = nn.LayerNorm(channels)
-        self.attention2 = CrossAttention(n_head,channels,d_context,in_proj_bias = False)
-        self.layer_norm3 = nn.LayerNorm(channels)
+        self.layernorm_1 = nn.LayerNorm(channels)
+        self.attention_1  = SelfAttention(channels,n_head,channels)
+        self.layernorm_2  = nn.LayerNorm(channels)
+        self.attention_2  = CrossAttention(n_head,channels,d_context,in_proj_bias = False)
+        self.layernorm_3  = nn.LayerNorm(channels)
 
         self.linear_geglu_1 = nn.Linear(channels,4*channels*2)
         self.linear_geglu_2 = nn.Linear(4*channels,channels)
-        self.output_conv = nn.Conv2d(channels,channels,kernel_size=1,padding=0)
+        self.conv_output  = nn.Conv2d(channels,channels,kernel_size=1,padding=0)
 
     def forward(self, x: torch.Tensor, context: torch.Tensor)->torch.Tensor:
         #x(batch_size,channels,Height,Width)
@@ -111,22 +111,22 @@ class UNet_AttentionBlock(nn.Module):
         x = self.conv_input(x)
 
         n,c,h,w = x.shape
-        x = x.view(n,c,h*w).transpose(1,2)
+        x = x.view(n,c,h*w).transpose(-1,-2)
 
         residue_short = x
 
         #LayerNorm + SelfAttention with skip connection
-        x = self.layer_norm1(x)
-        x = self.attention1(x)
+        x = self.layernorm_1(x)
+        x = self.attention_1(x)
         x = x + residue_short
 
         residue_short = x
 
         #LayerNorm + CrossAttention with skip connection
-        x = self.layer_norm2(x)
-        x = self.attention2(x,context)
+        x = self.layernorm_2(x)
+        x = self.attention_2(x,context)
         x = x + residue_short
-        x = self.layer_norm3(x)
+        x = self.layernorm_3(x)
 
         x, gate = self.linear_geglu_1(x).chunk(2,dim=-1)
         x = F.gelu(gate) * x
@@ -135,13 +135,13 @@ class UNet_AttentionBlock(nn.Module):
 
         x = x.transpose(1,2).view(n,c,h,w)
 
-        return self.output_conv(x)+residue_long
+        return self.conv_output(x)+residue_long
 
 
 class UNet(nn.Module):
     def __init__(self):
         super().__init__()
-        self.encoder = nn.Module([
+        self.encoders = nn.ModuleList([
             #(batch_size,4,Height/8,Width/8) -> (batch_size,320,Height/8,Width/8)
             SwitchSequential(nn.Conv2d(4,320,kernel_size=3,padding=1)),
             SwitchSequential(UNet_ResidualBlock(320,320),UNet_AttentionBlock(8,40)),
@@ -169,7 +169,7 @@ class UNet(nn.Module):
             UNet_ResidualBlock(1280,1280)
         )
 
-        self.decoder = nn.Module([
+        self.decoders = nn.ModuleList([
             #(batch_size,2560,Height/64,Width/64) -> (batch_size,1280,Height/64,Width/64)
             SwitchSequential(UNet_ResidualBlock(2560,1280)),
 
@@ -195,6 +195,25 @@ class UNet(nn.Module):
 
             SwitchSequential(UNet_ResidualBlock(640,320),UNet_AttentionBlock(8,40)),
         ])
+
+    def forward(self, x, context, time):
+        # x: (Batch_Size, 4, Height / 8, Width / 8)
+        # context: (Batch_Size, Seq_Len, Dim) 
+        # time: (1, 1280)
+
+        skip_connections = []
+        for layers in self.encoders:
+            x = layers(x, context, time)
+            skip_connections.append(x)
+
+        x = self.bottleneck(x, context, time)
+
+        for layers in self.decoders:
+            # Since we always concat with the skip connection of the encoder, the number of features increases before being sent to the decoder's layer
+            x = torch.cat((x, skip_connections.pop()), dim=1) 
+            x = layers(x, context, time)
+        
+        return x
 
 
 class UNet_Outputlayer(nn.Module):

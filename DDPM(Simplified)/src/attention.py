@@ -17,15 +17,15 @@ class SelfAttention(nn.Module):
         input_shape = x.shape
         batch_size, seq_len, dim_embed = input_shape
 
-        interm_shape = (batch_size, seq_len,  self.n_heads, self.d_head)
+        interim_shape = (batch_size, seq_len,  self.n_heads, self.d_head)
 
         #(batch_size,seq_len,dim_embed) -> (batch_size,seq_len,dim_embed*3) -> 3 tensors shaped of (batch_size,seq_len,dim_embed)
         q,k,v = self.in_proj(x).chunk(3, dim=-1)
 
         #(batch_size,seq_len,dim_embed) -> (batch_size,seq_len,n_heads,d_head) -> (batch_size,n_heads,seq_len,d_head)
-        q = q.view(interm_shape).transpose(1,2)
-        k = k.view(interm_shape).transpose(1,2)
-        v = v.view(interm_shape).transpose(1,2)
+        q = q.view(interim_shape).transpose(1,2)
+        k = k.view(interim_shape).transpose(1,2)
+        v = v.view(interim_shape).transpose(1,2)
 
         #(batch_size,n_heads,seq_len,d_head) @ (batch_size,n_heads,d_head,seq_len) -> (batch_size,n_heads,seq_len,seq_len)
         weight = q @ k.transpose(-1,-2)
@@ -55,7 +55,7 @@ class CrossAttention(nn.Module):
         self.k_proj = nn.Linear(d_cross, d_embed, bias=in_proj_bias)
         self.v_proj = nn.Linear(d_cross, d_embed, bias=in_proj_bias)
         self.out_proj = nn.Linear(d_embed, d_embed, bias=out_proj_bias)
-        self.d_head = dim_embed // n_heads
+        self.d_head = d_embed // n_heads
 
     def forward(self,x,context):
         #x:(batch_size, seq_len_Q, dim_Q)
@@ -86,3 +86,6 @@ class CrossAttention(nn.Module):
         output = self.out_proj(output)
 
         return output
+
+
+        
